@@ -1,6 +1,6 @@
 # dsh-bg-carousel
 
-DeepSeek Harness 背景轮播插件：把工作区 `backgrounds` 目录里的图片作为背景，自动轮播。
+DeepSeek Harness 背景轮播插件（标准 dsh bundle）：把工作区 `backgrounds` 目录里的图片作为背景，自动轮播。
 
 混合型插件（hybrid）：宿主端提供 `/dsh-bg/api` JSON API，客户端在侧边栏底部注册「🖼 背景」入口，打开控制面板。
 
@@ -11,9 +11,31 @@ DeepSeek Harness 背景轮播插件：把工作区 `backgrounds` 目录里的图
 - 背景以 CSS `body::before` 全屏覆盖方式渲染，半透明遮罩保证界面可读性
 - 图片经宿主 API 以 base64 data URL 下发，无需额外静态资源路由
 
-## 安装
+## 安装（标准 bundle，一键 `dsh plugin add`）
 
-插件依赖 dsh 宿主环境（`fs` / `sandboxPolicy` / `webServer` 服务与 `dsh-client-ui-slots` 插槽）。把本仓库放入 dsh 的 `plugins/` 目录，然后在宿主中用插件注入器注册（例如 super-injector 的 `dev_inject_plugin <本目录>`）。
+本插件是标准 dsh bundle（package.json 声明 `dsh.bundle.patch`），安装后由 profile 自动归入 bundle 层，无需任何手动注入。
+
+方式一：GitHub Release tgz（推荐）
+
+```bash
+dsh plugin add https://github.com/Jonah-Wu23/dsh-bg-carousel/releases/download/v0.1.0/dsh-bg-carousel-0.1.0.tgz
+```
+
+方式二：git 源
+
+```bash
+dsh plugin add github:Jonah-Wu23/dsh-bg-carousel
+```
+
+方式三：本地目录 / tgz
+
+```bash
+dsh plugin add ./dsh-bg-carousel-0.1.0.tgz
+# 或
+dsh plugin add /path/to/dsh-bg-carousel
+```
+
+`dsh plugin add` 需要 `pnpm` 在 PATH 中。安装后重启 dsh 即生效；`dsh plugin rm @dsh-external/dsh-bg-carousel` 可卸载。
 
 ## 使用
 
@@ -31,13 +53,11 @@ DeepSeek Harness 背景轮播插件：把工作区 `backgrounds` 目录里的图
 | POST | `/image` | 按文件名返回 base64 data URL（限制 12 MiB） |
 | POST | `/settings` | 更新轮播间隔（1500–120000 ms）与开关 |
 
-## 构建
+## 发布与构建
 
-```bash
-DSH_CHECKOUT=<dsh 源码 checkout> bash scripts/build.sh
-```
-
-构建依赖 dsh 仓库内的 tsc 与类型包（`cordis`、`@deepseek-ai/dsh-tools` 等），会以 junction/symlink 链接到 `node_modules` 后编译 `src/` → `lib/`。仓库内置的 `lib/` 为已构建产物，可直接使用。
+- 打 tag `v*` 自动触发 GitHub Actions 构建 `dsh-bg-carousel-<version>.tgz` 并附加到 Release（见 `.github/workflows/release.yml`）
+- 手动构建：`npm pack`（`files` 已包含 `lib/`、`cordis.patch.yml`、README、LICENSE）
+- 本地重编源码：`DSH_CHECKOUT=<dsh 源码 checkout> bash scripts/build.sh`（依赖 dsh 仓库内的 tsc 与类型包；仓库内置 `lib/` 为已构建产物，可直接使用）
 
 ## License
 

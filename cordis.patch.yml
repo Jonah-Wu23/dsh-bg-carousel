@@ -1,0 +1,7 @@
+# dsh-bg-carousel bundle patch.
+# Installed via `dsh plugin add <tgz|github|npm>`; the loader inserts the host
+# row below, and the package's own `dsh.client` manifest puts the client panel
+# into the browser roster (window.__DSH_BOOT__ / /plugins/.../client.js).
+- insert:
+    - id: dsh-bg-carousel
+      name: '@dsh-external/dsh-bg-carousel'

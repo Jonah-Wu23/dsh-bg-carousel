@@ -1,0 +1,26 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Pack tgz
+        run: npm pack
+
+      - name: Attach to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: '*.tgz'

@@ -1,25 +1,22 @@
 {
   "name": "@dsh-external/dsh-bg-carousel",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "DeepSeek Harness 背景轮播：把背景换成用户上传的图片并自动轮播",
   "type": "module",
   "main": "./lib/index.js",
-  "types": "./lib/types/index.d.ts",
   "files": [
-    "lib"
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
   ],
   "license": "MIT",
-  "peerDependencies": {
-    "@deepseek-ai/dsh-tools": ">=0.0.1-rc <2",
-    "cordis": ">=4.0.0-rc <5"
-  },
   "scripts": {
     "build": "bash scripts/build.sh",
     "build:client": "echo 'client already hand-written at lib/client.js'"
   },
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
     "./client": {
@@ -28,6 +25,9 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
