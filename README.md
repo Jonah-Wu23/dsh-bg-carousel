@@ -77,7 +77,7 @@ HLS 由 Safari 原生支持；FLV 需要 MSE 类扩展（如 flv.js）。Chromiu
 方式一：GitHub Release tgz
 
 ```bash
-dsh plugin --profile web add https://github.com/Jonah-Wu23/dsh-bg-carousel/releases/download/v0.2.0/dsh-bg-carousel-0.2.0.tgz
+dsh plugin --profile web add https://github.com/Jonah-Wu23/dsh-bg-carousel/releases/download/v0.2.0/dsh-external-dsh-bg-carousel-0.2.0.tgz
 ```
 
 方式二：git 源
