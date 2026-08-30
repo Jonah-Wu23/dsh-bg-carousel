@@ -3,11 +3,14 @@ import type { UserConfig } from 'tsdown'
 
 const PLUGIN_ID = "@dsh-external/dsh-bg-carousel"
 
+// 平台种子模块（packages/client/web/src/seed.ts）：require 在浏览器运行时
+// 由模块表直接解答，构建期一律 external。client bundle 只 require react。
 const CLIENT_EXTERNALS = [
   'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client',
-  'cordis',
+  'cordis', '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-runtime/client',
+  '@deepseek-ai/dsh-client-ui-primitives',
 ]
 
 const clientBundle: UserConfig = {

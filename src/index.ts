@@ -1,32 +1,79 @@
 /**
- * @dsh-external/dsh-bg-carousel — DeepSeek Harness 背景轮播。
- * Host 端：扫描 {workspaceRoot}/backgrounds 目录的图片，经 webServer 前缀路由
- * /dsh-bg/api 提供 JSON API（list/image/settings）。
+ * @dsh-external/dsh-bg-carousel — host 半（dsh v0.1.2-alpha.1）。
+ * 扫描媒体目录（默认 {workspaceRoot}/backgrounds，可在 UI 里改），经 webServer
+ * 前缀路由提供 /dsh-bg/img（媒体字节）与 /dsh-bg/api（JSON API）。
+ *
+ * 服务依赖经 `ctx.inject(['fs','sandboxPolicy','webServer'], …)` 在运行时等齐：
+ * 只有 web profile 提供 webServer；装进 headless/base 等 profile 时这里永远
+ * 不触发，插件安静待命，而不是把整个 harness 启动判成 "entry did not activate"。
  */
-import type { Context } from 'cordis'
+export const name = '@dsh-external/dsh-bg-carousel'
+export const inject: string[] = []
 
-type AppContext = Context & {
-  fs: {
-    resolve(path: string, opts?: { cwd?: string }): Promise<unknown>
-    stat(target: unknown, signal?: AbortSignal): Promise<unknown>
-    processPath(target: unknown): string
-    listDir(target: unknown, signal?: AbortSignal): Promise<Array<{ name?: string }>>
-    readBytes(target: unknown, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
-  }
-  sandboxPolicy: { workspaceRoot: string }
-  webServer: {
-    register(route: {
-      kind: string
-      path: string
-      handler: (req: any, res: any) => void | Promise<void>
-    }): () => void
-  }
+/** dsh fs 服务的本插件用到的那一面（packages/fs/fs/src/index.ts，v0.1.2-alpha.1）。 */
+interface FsService {
+  resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget>
+  processPath(target: FsTarget): string
+  stat(target: FsTarget, signal?: AbortSignal): Promise<FsInfo | undefined>
+  listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]>
+  readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
 }
 
-export const name = '@dsh-external/dsh-bg-carousel'
-export const inject = ['fs', 'sandboxPolicy', 'webServer']
+interface FsTarget {
+  targetKey: unknown
+  displayPath: string
+}
 
-const MIME: Record<string, string> = {
+interface FsInfo {
+  type: 'file' | 'directory' | 'other'
+}
+
+interface FsDirEntry {
+  name: string
+  type: 'file' | 'directory' | 'other'
+  target: FsTarget
+}
+
+/** dsh webServer 服务（packages/host/webserver/src/index.ts）。 */
+interface WebServerService {
+  register(route: {
+    kind: 'exact' | 'prefix'
+    path: string
+    handler: (req: HttpRequest, res: HttpResponse) => void | Promise<void>
+  }): () => void
+}
+
+interface HttpRequest {
+  url?: string
+  method?: string
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array>
+}
+
+interface HttpResponse {
+  writeHead(code: number, headers: Record<string, string | number>): void
+  end(body?: string | Uint8Array): void
+}
+
+interface SandboxPolicyService {
+  readonly workspaceRoot: string
+}
+
+/** cordis Context 的本插件用到的那一面（vendor/cordis/src）。 */
+interface HostContext {
+  effect(execute: () => void | (() => void), label?: string): () => void
+  /** 等齐 deps 后再挂子插件；等不到就永不触发（cordis Registry.inject）。 */
+  inject(deps: string[], callback: (scope: HostContext) => void): unknown
+  get(name: string): unknown
+}
+
+type ApiScope = HostContext & {
+  fs: FsService
+  sandboxPolicy: SandboxPolicyService
+  webServer: WebServerService
+}
+
+/** 图片扩展名 → MIME（现有格式全保留）。 */
+const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -36,12 +83,44 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
 }
 
+/** 视频扩展名 → MIME。HLS(.m3u8) 只有 Safari 原生可播、FLV 需 MSE（不可播时客户端会跳过）。 */
+const VIDEO_MIME: Record<string, string> = {
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.m3u8': 'application/vnd.apple.mpegurl',
+  '.flv': 'video/x-flv',
+}
+
+const MEDIA_MIME: Record<string, string> = { ...IMAGE_MIME, ...VIDEO_MIME }
+
+/** 单文件读取上限：图片 64 MiB，视频放宽到 256 MiB（readBytes 一次性进内存）。 */
+const IMAGE_MAX_BYTES = 64 * 1024 * 1024
+const VIDEO_MAX_BYTES = 256 * 1024 * 1024
+
+interface MediaItem {
+  name: string
+  kind: 'image' | 'video'
+}
+
 interface Settings {
   intervalMs: number
   enabled: boolean
+  panelOpacity: number
+  /** 用户配置的媒体目录；空串 = 自动探测 {workspaceRoot}/backgrounds。 */
+  mediaDir: string
+  /** 用户拖拽出来的播放顺序（文件名列表）；缺省按字母序。 */
+  order: string[]
 }
 
-async function readBody(req: any): Promise<string> {
+interface ProbeResult {
+  target: FsTarget | null
+  path: string
+  /** 配置目录不可用等原因的友好提示；undefined = 正常。 */
+  error?: string
+}
+
+async function readBody(req: HttpRequest): Promise<string> {
   const chunks: Buffer[] = []
   for await (const c of req) chunks.push(Buffer.from(c))
   return Buffer.concat(chunks).toString('utf8')
@@ -51,117 +130,271 @@ function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
   const chunk = 0x8000
   for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk) as unknown as number[])
   }
   return Buffer.from(binary, 'binary').toString('base64')
 }
 
-export function apply(ctx: AppContext): void {
-  let dirPath = ''
-  let dirTarget: unknown = null
-  let settings: Settings = { intervalMs: 8000, enabled: true }
+function extOf(name: string): string {
+  const lower = name.toLowerCase()
+  const dot = lower.lastIndexOf('.')
+  return dot >= 0 ? lower.slice(dot) : ''
+}
 
-  async function probeCandidates(): Promise<unknown> {
-    if (dirTarget) return dirTarget
-    const root = ctx.sandboxPolicy.workspaceRoot
-    const candidates = [root + '/backgrounds', root + '/workspace/backgrounds']
-    let foundPath = ''
-    let foundTarget: unknown = null
-    for (const c of candidates) {
-      try {
-        const t = await ctx.fs.resolve(c)
-        const info = await ctx.fs.stat(t)
-        if (info) {
-          foundPath = ctx.fs.processPath(t)
-          foundTarget = t
-          break
+function kindOf(name: string): 'image' | 'video' | undefined {
+  const ext = extOf(name)
+  if (IMAGE_MIME[ext]) return 'image'
+  if (VIDEO_MIME[ext]) return 'video'
+  return undefined
+}
+
+/** 路由用的文件名安全检查：只允许单段文件名。 */
+function isSafeName(name: string): boolean {
+  return !!name && !name.includes('/') && !name.includes('\\') && !name.includes('..')
+}
+
+export function apply(ctx: HostContext): void {
+  console.log('[bg-carousel] waiting for fs/sandboxPolicy/webServer (no-op outside the web profile)')
+
+  ctx.inject(['fs', 'sandboxPolicy', 'webServer'], (rawScope) => {
+    const scope = rawScope as ApiScope
+    let dirPath = ''
+    let dirTarget: FsTarget | null = null
+    /** mediaDir 等目录来源变更后置位，强制下一次探测重跑（缓存失效）。 */
+    let dirDirty = true
+    const settings: Settings = {
+      intervalMs: 8000,
+      enabled: true,
+      panelOpacity: 0.5,
+      mediaDir: '',
+      order: [],
+    }
+
+    /**
+     * 探测当前媒体目录：
+     * 1. settings.mediaDir 非空 → 先按原样解析（绝对路径），失败再按工作区相对路径解析；
+     *    必须存在且是目录，否则记 dirError 并降级到默认候选。
+     * 2. 默认候选 {workspaceRoot}/backgrounds、{workspaceRoot}/workspace/backgrounds（现有行为）。
+     * 3. 全部失败 → 兜底解析第一个候选（现有行为，目录不存在时 listDir 会报错降级为空列表）。
+     */
+    async function probeDir(): Promise<ProbeResult> {
+      const root = scope.sandboxPolicy.workspaceRoot
+      let configuredError: string | undefined
+      const configured = settings.mediaDir.trim()
+      if (configured) {
+        const attempts: Array<{ path: string; opts?: { cwd?: string } }> = [
+          { path: configured },
+          { path: configured, opts: { cwd: root } },
+        ]
+        for (const attempt of attempts) {
+          try {
+            const t = await scope.fs.resolve(attempt.path, attempt.opts)
+            const info = await scope.fs.stat(t)
+            if (info && info.type === 'directory') {
+              return { target: t, path: scope.fs.processPath(t) }
+            }
+          } catch { /* try next */ }
         }
-      } catch { /* try next */ }
-    }
-    if (!foundTarget) {
-      try {
-        const t = await ctx.fs.resolve(candidates[0])
-        foundPath = ctx.fs.processPath(t)
-        foundTarget = t
-      } catch { /* keep null */ }
-    }
-    dirPath = foundPath
-    dirTarget = foundTarget
-    console.log('[bg-carousel] root=' + root + ' dir=' + foundPath)
-    return foundTarget
-  }
-
-  async function listImages(): Promise<string[]> {
-    const dir = await probeCandidates()
-    if (!dir) return []
-    let entries: Array<{ name?: string }> = []
-    try {
-      entries = await ctx.fs.listDir(dir)
-    } catch (err) {
-      console.log('[bg-carousel] listDir error: ' + String(err))
-      return []
-    }
-    const images: string[] = []
-    for (const e of entries) {
-      const name = typeof e.name === 'string' && e.name ? e.name : ''
-      if (!name) continue
-      const lower = name.toLowerCase()
-      const dot = lower.lastIndexOf('.')
-      if (dot < 0) continue
-      const ext = lower.slice(dot)
-      if (!MIME[ext]) continue
-      images.push(name)
-    }
-    images.sort()
-    return images
-  }
-
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'prefix',
-    path: '/dsh-bg/api',
-    handler: async (req: any, res: any) => {
-      const send = (code: number, obj: unknown): void => {
-        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify(obj))
+        // 配置目录不可用：记下提示，继续走默认候选（降级，不空转）
+        configuredError = '配置的媒体目录不可用或不是目录：' + configured + '（已回退到默认目录）'
+      }
+      const candidates = [root + '/backgrounds', root + '/workspace/backgrounds']
+      for (const c of candidates) {
+        try {
+          const t = await scope.fs.resolve(c)
+          const info = await scope.fs.stat(t)
+          if (info && info.type === 'directory') {
+            return { target: t, path: scope.fs.processPath(t), error: configuredError }
+          }
+        } catch { /* try next */ }
       }
       try {
-        const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
-          .replace(/^\/dsh-bg\/api/, '') || '/'
-        if (req.method === 'GET' && pathname === '/list') {
-          const images = await listImages()
-          return send(200, { ok: true, dir: dirPath, images, settings })
+        const t = await scope.fs.resolve(candidates[0])
+        return { target: t, path: scope.fs.processPath(t), error: configuredError }
+      } catch {
+        return {
+          target: null,
+          path: '',
+          error: configuredError ?? '找不到可用的媒体目录（默认 ' + candidates[0] + ' 不存在）',
         }
-        if (req.method === 'POST' && pathname === '/image') {
-          const body = JSON.parse(await readBody(req))
-          const name = String(body?.name ?? '').trim()
-          if (!name) return send(400, { ok: false, error: 'name 必填' })
-          if (name.includes('/') || name.includes('\\') || name.includes('..')) {
-            return send(400, { ok: false, error: 'bad name' })
-          }
-          const dir = await probeCandidates()
-          if (!dir) return send(500, { ok: false, error: 'no background dir' })
-          const target = await ctx.fs.resolve(name, { cwd: dirPath })
-          const bytes = await ctx.fs.readBytes(target, undefined, 12 * 1024 * 1024)
-          const dot = name.toLowerCase().lastIndexOf('.')
-          const ext = dot >= 0 ? name.toLowerCase().slice(dot) : ''
-          const mime = MIME[ext] || 'application/octet-stream'
-          return send(200, { ok: true, dataUrl: 'data:' + mime + ';base64,' + bytesToBase64(bytes) })
-        }
-        if (req.method === 'POST' && pathname === '/settings') {
-          const body = JSON.parse(await readBody(req))
-          if (typeof body?.intervalMs === 'number') {
-            settings.intervalMs = Math.min(Math.max(body.intervalMs, 1500), 120000)
-          }
-          if (typeof body?.enabled === 'boolean') settings.enabled = body.enabled
-          return send(200, { ok: true, settings })
-        }
-        return send(404, { ok: false, error: 'not found' })
+      }
+    }
+
+    async function probeCached(): Promise<ProbeResult> {
+      if (!dirDirty && dirTarget) return { target: dirTarget, path: dirPath }
+      const result = await probeDir()
+      dirPath = result.path
+      dirTarget = result.target
+      dirDirty = false
+      console.log('[bg-carousel] root=' + scope.sandboxPolicy.workspaceRoot
+        + ' dir=' + result.path
+        + (result.error ? ' (' + result.error + ')' : ''))
+      return result
+    }
+
+    /**
+     * 扫描媒体目录并产出轮播清单：
+     * - 只收 file 类型 + 受支持扩展名（图片/视频分开归类）；
+     * - 默认按文件名字母序合并成 media；
+     * - settings.order 里有的名字按用户顺序排前面，新文件按字母序追加在尾部。
+     */
+    async function listMedia(): Promise<{
+      images: string[]
+      videos: string[]
+      media: MediaItem[]
+      dir: string
+      error?: string
+    }> {
+      const probe = await probeCached()
+      if (!probe.target) {
+        return { images: [], videos: [], media: [], dir: probe.path, error: probe.error }
+      }
+      let entries: FsDirEntry[] = []
+      try {
+        entries = await scope.fs.listDir(probe.target)
       } catch (err) {
-        console.log('[bg-carousel] api error: ' + String(err))
-        return send(500, { ok: false, error: String(err) })
+        console.log('[bg-carousel] listDir error: ' + String(err))
+        return {
+          images: [], videos: [], media: [], dir: probe.path,
+          error: '媒体目录无法读取：' + probe.path,
+        }
       }
-    },
-  }), 'dsh-bg-carousel: api')
+      const images: string[] = []
+      const videos: string[] = []
+      for (const e of entries) {
+        if (e.type !== 'file') continue
+        const kind = kindOf(e.name)
+        if (kind === 'image') images.push(e.name)
+        if (kind === 'video') videos.push(e.name)
+      }
+      images.sort()
+      videos.sort()
+      const items: MediaItem[] = [
+        ...images.map((name): MediaItem => ({ name, kind: 'image' })),
+        ...videos.map((name): MediaItem => ({ name, kind: 'video' })),
+      ]
+      items.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      const pos = new Map(settings.order.map((n, i) => [n, i]))
+      if (pos.size > 0) {
+        items.sort((a, b) => {
+          const pa = pos.get(a.name)
+          const pb = pos.get(b.name)
+          if (pa !== undefined && pb !== undefined) return pa - pb
+          if (pa !== undefined) return -1
+          if (pb !== undefined) return 1
+          return 0
+        })
+      }
+      return { images, videos, media: items, dir: probe.path, error: probe.error }
+    }
 
-  console.log('[bg-carousel] host ready')
+    /** 按名字读媒体字节；图片/视频分别限幅，超出会抛 FS_TOO_LARGE（由路由兜底成 500）。 */
+    async function serveMedia(name: string): Promise<Uint8Array | null> {
+      const probe = await probeCached()
+      if (!probe.target) return null
+      const target = await scope.fs.resolve(name, { cwd: dirPath })
+      const maxBytes = VIDEO_MIME[extOf(name)] ? VIDEO_MAX_BYTES : IMAGE_MAX_BYTES
+      return scope.fs.readBytes(target, undefined, maxBytes)
+    }
+
+    scope.effect(() => scope.webServer.register({
+      kind: 'prefix',
+      path: '/dsh-bg/img',
+      handler: async (req, res) => {
+        try {
+          const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+            .replace(/^\/dsh-bg\/img\//, '')
+          const name = decodeURIComponent(pathname)
+          if (!isSafeName(name)) {
+            res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+            return res.end('bad name')
+          }
+          const bytes = await serveMedia(name)
+          if (!bytes) {
+            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+            return res.end('no media dir')
+          }
+          res.writeHead(200, {
+            'content-type': MEDIA_MIME[extOf(name)] || 'application/octet-stream',
+            'cache-control': 'private, max-age=3600',
+          })
+          res.end(Buffer.from(bytes))
+        } catch (err) {
+          console.log('[bg-carousel] img error: ' + String(err))
+          res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end(String(err))
+        }
+      },
+    }), 'dsh-bg-carousel: img')
+
+    scope.effect(() => scope.webServer.register({
+      kind: 'prefix',
+      path: '/dsh-bg/api',
+      handler: async (req, res) => {
+        const send = (code: number, obj: unknown): void => {
+          res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify(obj))
+        }
+        try {
+          const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+            .replace(/^\/dsh-bg\/api/, '') || '/'
+          if (req.method === 'GET' && pathname === '/list') {
+            // images 保留给旧版 client；media 是图片+视频混合轮播清单。
+            const { images, videos, media, dir, error } = await listMedia()
+            return send(200, {
+              ok: true,
+              dir,
+              dirError: error ?? null,
+              images,
+              videos,
+              media,
+              settings,
+            })
+          }
+          if (req.method === 'POST' && pathname === '/image') {
+            const body = JSON.parse(await readBody(req))
+            const name = String(body?.name ?? '').trim()
+            if (!name) return send(400, { ok: false, error: 'name 必填' })
+            if (!isSafeName(name)) return send(400, { ok: false, error: 'bad name' })
+            const bytes = await serveMedia(name)
+            if (!bytes) return send(500, { ok: false, error: 'no media dir' })
+            return send(200, {
+              ok: true,
+              dataUrl: 'data:' + (MEDIA_MIME[extOf(name)] || 'application/octet-stream') + ';base64,' + bytesToBase64(bytes),
+            })
+          }
+          if (req.method === 'POST' && pathname === '/settings') {
+            const body = JSON.parse(await readBody(req))
+            if (typeof body?.intervalMs === 'number') {
+              settings.intervalMs = Math.min(Math.max(body.intervalMs, 1500), 120000)
+            }
+            if (typeof body?.enabled === 'boolean') settings.enabled = body.enabled
+            if (typeof body?.panelOpacity === 'number') {
+              settings.panelOpacity = Math.min(Math.max(body.panelOpacity, 0.1), 0.95)
+            }
+            // mediaDir：空串 = 恢复自动探测；非空则原样保存（非法路径由探测降级 + dirError 提示）。
+            if (typeof body?.mediaDir === 'string') {
+              const next = body.mediaDir.trim().slice(0, 1024)
+              if (next !== settings.mediaDir) dirDirty = true
+              settings.mediaDir = next
+            }
+            // order：轮播顺序（文件名列表）；只收合法单段文件名，去重，超长截断。
+            if (Array.isArray(body?.order)) {
+              const raw: unknown[] = body.order
+              settings.order = Array.from(new Set(
+                raw.filter((n): n is string => typeof n === 'string' && isSafeName(n)),
+              )).slice(0, 1000)
+            }
+            return send(200, { ok: true, settings })
+          }
+          return send(404, { ok: false, error: 'not found' })
+        } catch (err) {
+          console.log('[bg-carousel] api error: ' + String(err))
+          return send(500, { ok: false, error: String(err) })
+        }
+      },
+    }), 'dsh-bg-carousel: api')
+
+    console.log('[bg-carousel] host ready')
+  })
 }
