@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-bg-carousel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "DeepSeek Harness 背景轮播：把背景换成用户上传的图片并自动轮播",
   "type": "module",
   "main": "./lib/index.js",

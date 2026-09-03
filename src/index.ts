@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-bg-carousel — host 半（dsh v0.1.2-alpha.1）。
+ * @dsh-external/dsh-bg-carousel — host 半（dsh v0.1.2-rc.1）。
  * 扫描媒体目录（默认 {workspaceRoot}/backgrounds，可在 UI 里改），经 webServer
  * 前缀路由提供 /dsh-bg/img（媒体字节）与 /dsh-bg/api（JSON API）。
  *
@@ -7,10 +7,17 @@
  * 只有 web profile 提供 webServer；装进 headless/base 等 profile 时这里永远
  * 不触发，插件安静待命，而不是把整个 harness 启动判成 "entry did not activate"。
  */
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 export const name = '@dsh-external/dsh-bg-carousel'
 export const inject: string[] = []
 
-/** dsh fs 服务的本插件用到的那一面（packages/fs/fs/src/index.ts，v0.1.2-alpha.1）。 */
+/** dsh fs 服务的本插件用到的那一面（packages/fs/fs/src/index.ts，v0.1.2-rc.1）。 */
 interface FsService {
   resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget>
   processPath(target: FsTarget): string
@@ -26,12 +33,16 @@ interface FsTarget {
 
 interface FsInfo {
   type: 'file' | 'directory' | 'other'
+  /** 字节大小；后端能廉价报告时提供（本地后端提供）。 */
+  size?: number
 }
 
 interface FsDirEntry {
   name: string
   type: 'file' | 'directory' | 'other'
   target: FsTarget
+  /** 字节大小；后端能廉价报告时提供（本地后端提供）。 */
+  size?: number
 }
 
 /** dsh webServer 服务（packages/host/webserver/src/index.ts）。 */
@@ -97,6 +108,78 @@ const MEDIA_MIME: Record<string, string> = { ...IMAGE_MIME, ...VIDEO_MIME }
 /** 单文件读取上限：图片 64 MiB，视频放宽到 256 MiB（readBytes 一次性进内存）。 */
 const IMAGE_MAX_BYTES = 64 * 1024 * 1024
 const VIDEO_MAX_BYTES = 256 * 1024 * 1024
+
+/**
+ * 缩略图（性能）：面板缩略图若直接用原图 URL，上百张高清图会全量解码、按
+ * 56×40 绘制，Commit/光栅化占掉一半以上主线程时间（实测 48.8%）。这里用
+ * PowerShell System.Drawing（Windows 自带，零新增依赖）批量把大图缩到
+ * THUMB_MAX_SIDE 以内存进磁盘缓存；非 Windows / 生成失败时回退原图字节。
+ * 只对超过 THUMB_MIN_BYTES 的图生成；视频不做（客户端本就只取首帧元数据）。
+ */
+const THUMB_MAX_SIDE = 320
+const THUMB_MIN_BYTES = 512 * 1024
+const THUMB_DIR = join(homedir(), '.dsh', 'bg-carousel', 'thumbs')
+
+interface ThumbJob {
+  src: string
+  dst: string
+}
+
+let thumbQueue: ThumbJob[] = []
+let thumbRunning = false
+
+function thumbPathFor(absPath: string): string {
+  const key = createHash('md5').update(absPath.toLowerCase()).digest('hex').slice(0, 16)
+  return join(THUMB_DIR, `${key}.jpg`)
+}
+
+/** 排空缩略图队列：一次 powershell 进程处理整个批次，失败逐项跳过。 */
+function drainThumbQueue(): void {
+  if (thumbRunning || thumbQueue.length === 0) return
+  thumbRunning = true
+  const batch = thumbQueue.splice(0, thumbQueue.length)
+  try {
+    mkdirSync(THUMB_DIR, { recursive: true })
+  } catch { /* powershell 端也会建目录 */ }
+  // 脚本写临时文件再执行：-Command 有 32KB 命令行上限，大批次会超
+  const script = [
+    'Add-Type -AssemblyName System.Drawing | Out-Null',
+    '$ErrorActionPreference = "Continue"',
+    ...batch.map((j) =>
+      `if (-not (Test-Path -LiteralPath "${j.dst.replace(/"/g, '""')}")) { try {` +
+      ` $i = [System.Drawing.Image]::FromFile("${j.src.replace(/"/g, '""')}");` +
+      ` $s = ${THUMB_MAX_SIDE} / [Math]::Max($i.Width, $i.Height);` +
+      ` if ($s -gt 1) { $s = 1 };` +
+      ` $w = [Math]::Max(1, [int]($i.Width * $s)); $h = [Math]::Max(1, [int]($i.Height * $s));` +
+      ` $b = New-Object System.Drawing.Bitmap($w, $h);` +
+      ` $g = [System.Drawing.Graphics]::FromImage($b);` +
+      ` $g.InterpolationMode = "HighQualityBicubic"; $g.DrawImage($i, 0, 0, $w, $h);` +
+      ` $enc = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq "image/jpeg" };` +
+      ` $ep = New-Object System.Drawing.Imaging.EncoderParameters(1);` +
+      ` $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]80);` +
+      ` $b.Save("${j.dst.replace(/"/g, '""')}", $enc, $ep);` +
+      ` $g.Dispose(); $b.Dispose(); $i.Dispose();` +
+      ` } catch { } }`,
+    ),
+  ].join(';\n')
+  const scriptFile = join(tmpdir(), `dsh-bg-thumbs-${Date.now()}-${Math.random().toString(36).slice(2)}.ps1`)
+  try {
+    writeFileSync(scriptFile, script, 'utf8')
+  } catch {
+    thumbRunning = false
+    return
+  }
+  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile], {
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  child.on('error', () => { thumbRunning = false })
+  child.on('exit', () => {
+    thumbRunning = false
+    try { unlinkSync(scriptFile) } catch { /* 清理失败无害 */ }
+    drainThumbQueue() // 批处理期间又入队的任务继续排空
+  })
+}
 
 interface MediaItem {
   name: string
@@ -261,11 +344,22 @@ export function apply(ctx: HostContext): void {
       }
       const images: string[] = []
       const videos: string[] = []
+      const thumbJobs: ThumbJob[] = []
       for (const e of entries) {
         if (e.type !== 'file') continue
         const kind = kindOf(e.name)
         if (kind === 'image') images.push(e.name)
         if (kind === 'video') videos.push(e.name)
+        // 大图入队生成缩略图（已有缓存的跳过；一次 powershell 批量处理）
+        if (kind === 'image' && (e.size ?? THUMB_MIN_BYTES) >= THUMB_MIN_BYTES) {
+          const abs = scope.fs.processPath(e.target)
+          const dst = thumbPathFor(abs)
+          if (!existsSync(dst)) thumbJobs.push({ src: abs, dst })
+        }
+      }
+      if (thumbJobs.length > 0) {
+        thumbQueue.push(...thumbJobs)
+        drainThumbQueue()
       }
       images.sort()
       videos.sort()
@@ -326,6 +420,58 @@ export function apply(ctx: HostContext): void {
         }
       },
     }), 'dsh-bg-carousel: img')
+
+    scope.effect(() => scope.webServer.register({
+      kind: 'prefix',
+      path: '/dsh-bg/thumb',
+      handler: async (req, res) => {
+        try {
+          const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+            .replace(/^\/dsh-bg\/thumb\//, '')
+          const name = decodeURIComponent(pathname)
+          if (!isSafeName(name)) {
+            res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+            return res.end('bad name')
+          }
+          const probe = await probeCached()
+          if (!probe.target) {
+            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+            return res.end('no media dir')
+          }
+          const target = await scope.fs.resolve(name, { cwd: dirPath })
+          const abs = scope.fs.processPath(target)
+          const dst = thumbPathFor(abs)
+          if (existsSync(dst)) {
+            const bytes = await readFile(dst)
+            res.writeHead(200, {
+              'content-type': 'image/jpeg',
+              'cache-control': 'private, max-age=86400',
+            })
+            return res.end(bytes)
+          }
+          // 缓存未命中：回退原图字节，并补一条生成任务（幂等）
+          const info = await scope.fs.stat(target)
+          if (info?.size === undefined || info.size >= THUMB_MIN_BYTES) {
+            thumbQueue.push({ src: abs, dst })
+            drainThumbQueue()
+          }
+          const bytes = await serveMedia(name)
+          if (!bytes) {
+            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+            return res.end('no media')
+          }
+          res.writeHead(200, {
+            'content-type': MEDIA_MIME[extOf(name)] || 'application/octet-stream',
+            'cache-control': 'private, max-age=3600',
+          })
+          res.end(Buffer.from(bytes))
+        } catch (err) {
+          console.log('[bg-carousel] thumb error: ' + String(err))
+          res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end(String(err))
+        }
+      },
+    }), 'dsh-bg-carousel: thumb')
 
     scope.effect(() => scope.webServer.register({
       kind: 'prefix',

@@ -1,12 +1,3 @@
-/**
- * @dsh-external/dsh-bg-carousel — host 半（dsh v0.1.2-alpha.1）。
- * 扫描媒体目录（默认 {workspaceRoot}/backgrounds，可在 UI 里改），经 webServer
- * 前缀路由提供 /dsh-bg/img（媒体字节）与 /dsh-bg/api（JSON API）。
- *
- * 服务依赖经 `ctx.inject(['fs','sandboxPolicy','webServer'], …)` 在运行时等齐：
- * 只有 web profile 提供 webServer；装进 headless/base 等 profile 时这里永远
- * 不触发，插件安静待命，而不是把整个 harness 启动判成 "entry did not activate"。
- */
 export declare const name = "@dsh-external/dsh-bg-carousel";
 export declare const inject: string[];
 /** cordis Context 的本插件用到的那一面（vendor/cordis/src）。 */

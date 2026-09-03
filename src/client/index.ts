@@ -1,16 +1,31 @@
 /**
- * @dsh-external/dsh-bg-carousel — client 面板（dsh v0.1.2-alpha.1）。
+ * @dsh-external/dsh-bg-carousel — client 面板（dsh v0.1.2-rc.1）。
  * React 组件经 ctx.slots 注册：Trigger 进 sidebar.footer.action，面板进
  * shell.overlay。v0.1.2 起 slots.register 的组件是第二个位置参数（不再放在
  * options 里），组件本身是 React 函数组件而不是 {render()} 对象。
  * 运行时只 require 平台种子模块 react（tsdown external；其余为类型导入，构建期擦除）。
  * 构建：tsdown → lib/client.js（window.__ModuleLoader__.load 包裹）。
  *
+ * 目录能力（v0.1.2-rc.1 起）：rc.1 的 web-app 组合了 host-directory-picker
+ * 与 api-workspace-controller 的 remote namespace：
+ * - 「选择目录」按钮 → ctx.remote.directoryPicker.pick()（Windows 走
+ *   IFileOpenDialog 原生选择器，rc.1 修复了中文路径截断）；
+ * - 「打开文件夹」按钮 → ctx.remote.session.openWorkspacePath({ path })，
+ *   由宿主在系统文件管理器中打开目录（替代会被浏览器拦截的 file:// 链接）。
+ * 'remote' 与点路径 namespace（remote.directoryPicker / remote.session）已声明进
+ * 插件 inject——cordis 拒绝未声明服务的属性访问
+ * （"cannot get property … without inject"）；namespace 缺失时给出提示而不是静默失败。
+ *
  * 媒体轮播：图片走 body 背景（现有机制）；视频走 z-index:-1 的固定定位层
  * （object-fit:cover、静音、自动播放），UI 的半透明 token 照常透出视频层，
  * 因此「面板不透明」滑杆对图片和视频同样生效。
  */
 import * as React from 'react'
+
+/** dsh-client-remotes 的 RemoteResult（dsh-typert-protocol）在插件里用到的那一面。 */
+type RemoteResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: { message: string } }
 
 type ClientContext = {
   effect(execute: () => void | (() => void), label?: string): () => void
@@ -22,9 +37,26 @@ type ClientContext = {
     getTheme(): { active: { colorScheme: 'light' | 'dark' } }
     overrideTokens(source: string, tokens: Record<string, { light: string; dark: string }>): () => void
   }
+  /** dsh-api-remotes 挂载的 remote namespaces（web profile 提供；已声明进 inject）。 */
+  remote?: {
+    directoryPicker?: {
+      pick(signal?: AbortSignal): Promise<RemoteResult<string | null>>
+    }
+    session?: {
+      openWorkspacePath(request: { path: string }, signal?: AbortSignal): Promise<RemoteResult<{ opened: true }>>
+    }
+  }
 }
 
-export const inject = ['slots', 'theme']
+// 目录选择（directoryPicker.pick）与宿主打开路径（session.openWorkspacePath）
+// 挂在 remote 的 namespace 上；rc.1 里每个 namespace 是独立的点路径服务
+// （remote.directoryPicker / remote.session），cordis 只允许访问 inject 声明过的
+// 服务，因此必须像官方 ui-chat（inject 含 'remote.session'）一样把点路径
+// namespace 一并声明；只声明 'remote' 时 namespace 访问会抛
+// "cannot get property \"remote.directoryPicker\" without inject"。
+export const inject = [
+  'slots', 'theme', 'remote', 'remote.directoryPicker', 'remote.session',
+]
 
 const API = '/dsh-bg/api'
 
@@ -58,6 +90,47 @@ function fetchJson(path: string, init?: RequestInit): Promise<any> {
 // 静态媒体 URL（Host 直接返回文件字节，不走 base64，支持大图/大视频）
 function imageUrl(name: string): string {
   return '/dsh-bg/img/' + encodeURIComponent(name)
+}
+
+// 缩略图 URL：宿主把大图缩到 320px 缓存后返回（未命中时回退原图）。
+// 上百张高清图若直接用原图当缩略图，全量解码+绘制会占掉一半主线程时间。
+function thumbUrl(name: string): string {
+  return '/dsh-bg/thumb/' + encodeURIComponent(name)
+}
+
+/**
+ * 打开宿主原生目录选择器（v0.1.2-rc.1 的 host-directory-picker，Windows 用
+ * IFileOpenDialog）。走 remote.directoryPicker namespace；namespace 缺失时抛
+ * 带提示的错误，面板负责展示。注意：cordis 只允许插件访问其 inject 声明过的
+ * 服务，因此本插件把 'remote' 声明进 inject，未声明的属性访问会抛
+ * "cannot get property … without inject"。
+ * @returns 选中的绝对路径；用户在系统对话框里取消时返回 null。
+ */
+async function pickDirectoryOnHost(): Promise<string | null> {
+  const picker = clientCtx?.remote?.directoryPicker
+  if (picker && typeof picker.pick === 'function') {
+    const result = await picker.pick()
+    if (result.ok) return result.value
+    throw new Error('目录选择失败：' + result.error.message)
+  }
+  throw new Error('当前 dsh 界面未提供目录选择能力（需要 v0.1.2-rc.1+ 的 web profile）')
+}
+
+/**
+ * 在系统文件管理器中打开目录（v0.1.2-rc.1 起由宿主 openWorkspacePath 完成，
+ * 替代被浏览器拦截的 window.open('file:///…')）。
+ * @returns 打开失败时的错误文案；null 表示已成功打开或无可达的宿主能力。
+ */
+async function openDirOnHost(dir: string): Promise<string | null> {
+  const session = clientCtx?.remote?.session
+  if (session && typeof session.openWorkspacePath === 'function') {
+    const result = await session.openWorkspacePath({ path: dir })
+    if (!result.ok) return '打开文件夹失败：' + result.error.message
+    return null
+  }
+  // 兜底：桌面环境（如旧版）允许时直接尝试 file://，浏览器通常会拦截
+  window.open('file:///' + dir.replace(/\\/g, '/'))
+  return null
 }
 
 const panelStyle: React.CSSProperties = {
@@ -100,6 +173,8 @@ const inputStyle: React.CSSProperties = {
 let bgStyleEl: HTMLStyleElement | null = null
 let themeDispose: (() => void) | null = null
 let themeService: ClientContext['theme'] | null = null
+/** apply() 收到的 client ctx：面板按钮在点击时才惰性读取 remote/uiWorkspace 服务。 */
+let clientCtx: ClientContext | null = null
 let currentUrl: string | null = null
 let currentOpacity = 0.5
 let videoLayerEl: HTMLDivElement | null = null
@@ -273,6 +348,7 @@ function VideoThumb(props: { src: string; active: boolean; onClick: () => void }
     src: props.src,
     muted: true,
     preload: 'metadata',
+    draggable: false,
     style: props.active ? thumbActive : thumbStyle,
     onClick: props.onClick,
     onError: () => setFailed(true),
@@ -425,6 +501,31 @@ function Panel(): React.ReactElement | null {
       .catch((e) => setError(String(e)))
   }
 
+  // 选择目录：宿主原生目录选择器（v0.1.2-rc.1 的 directoryPicker）；取消则不动
+  const pickDir = (): void => {
+    setError('')
+    pickDirectoryOnHost().then((picked) => {
+      if (picked == null) return
+      savedDirRef.current = picked
+      setDirInput(picked)
+      fetchJson('/settings', { method: 'POST', body: JSON.stringify({ mediaDir: picked }) })
+        .then(() => refresh())
+        .catch((e) => setError(String(e)))
+    }).catch((e) => setError(String(e)))
+  }
+
+  // 打开文件夹：宿主 openWorkspacePath 在系统文件管理器中打开（替代 file://）
+  const openDir = (): void => {
+    if (!dir) {
+      setError('当前没有可打开的媒体目录')
+      return
+    }
+    setError('')
+    openDirOnHost(dir).then((err) => {
+      if (err) setError(err)
+    }).catch((e) => setError(String(e)))
+  }
+
   // 拖拽排序：放下后本地立即生效并持久化到 settings.order
   const commitReorder = (targetIdx: number): void => {
     const from = dragIndexRef.current
@@ -449,10 +550,30 @@ function Panel(): React.ReactElement | null {
       draggable: true,
       title: m.name + (m.kind === 'video' ? '（视频）' : '') + '，拖拽可调整顺序',
       style: thumbWrapStyle,
-      onDragStart: () => { dragIndexRef.current = i },
-      onDragOver: (e) => { e.preventDefault() },
-      onDrop: () => commitReorder(i),
-      onDragEnd: () => { dragIndexRef.current = -1 },
+      onDragStart: (e) => {
+        dragIndexRef.current = i
+        // 不冒泡：官方 ui-attachment 在 document 上有附件拖放监听
+        e.stopPropagation()
+        e.dataTransfer.effectAllowed = 'move'
+        // Firefox 不设置数据不启动拖拽；自定义类型（非 Files）也确保
+        // 这是一次面板内排序拖拽而不是文件拖放
+        e.dataTransfer.setData('application/x-dsh-bg-carousel-order', String(i))
+      },
+      onDragEnter: (e) => { e.preventDefault(); e.stopPropagation() },
+      onDragOver: (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        e.dataTransfer.dropEffect = 'move'
+      },
+      onDrop: (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        commitReorder(i)
+      },
+      onDragEnd: (e) => {
+        e.stopPropagation()
+        dragIndexRef.current = -1
+      },
     },
     m.kind === 'video'
       ? React.createElement(VideoThumb, {
@@ -461,16 +582,43 @@ function Panel(): React.ReactElement | null {
           onClick: () => selectThumb(i),
         })
       : React.createElement('img', {
-          src: mediaUrl(m.name),
+          src: thumbUrl(m.name) + (bust ? '?b=' + bust : ''),
           alt: m.name,
+          // img 是浏览器原生可拖拽元素：不关掉的话按住图片启动的是浏览器
+          // 自带图片拖拽（Chromium 携带 Files 类型），插件的 onDragStart
+          // 根本不会执行，排序失效且会触发全局附件拖放层
+          draggable: false,
+          // 懒加载 + 异步解码：只解码视口附近的缩略图，解码不占主线程
+          loading: 'lazy',
+          decoding: 'async',
+          width: 56,
+          height: 40,
           style: i === index ? thumbActive : thumbStyle,
           onClick: () => selectThumb(i),
         })),
   )
 
-  const message = dirError || error
+  // 操作报错（选择/打开/保存）优先展示，其次才是清单携带的 dirError，
+  // 避免瞬时操作错误被常驻目录提示永久遮蔽。
+  const message = error || dirError
 
-  return React.createElement('div', { style: panelStyle },
+  // 面板内的元素拖拽（排序）不冒泡到 document：官方 ui-attachment 在 document
+  // 上监听 dragenter/dragover/drop 显示附件拖放层（以 dataTransfer.types 含
+  // 'Files' 为门槛），元素拖拽在部分 Chromium 里也带 'Files'，会把排序拖拽
+  // 误判成附件拖放并弹文件对话框。只拦非文件拖拽；真实文件拖放照常透传。
+  const dragGuard = (e: React.DragEvent): void => {
+    const types = e.dataTransfer?.types
+    if (types && Array.from(types).includes('Files')) return
+    e.stopPropagation()
+  }
+
+  return React.createElement('div', {
+    style: panelStyle,
+    onDragEnter: dragGuard,
+    onDragOver: dragGuard,
+    onDrop: dragGuard,
+    onDragEnd: dragGuard,
+  },
     React.createElement('div', { style: { fontWeight: 600, fontSize: 14 } }, '背景轮播'),
     React.createElement('div', { style: rowStyle },
       React.createElement('input', {
@@ -480,6 +628,7 @@ function Panel(): React.ReactElement | null {
         onChange: (e) => setDirInput(e.target.value),
         onKeyDown: (e) => { if (e.key === 'Enter') saveDir() },
       }),
+      React.createElement('button', { style: btnStyle, onClick: pickDir, title: '打开系统目录选择器' }, '选择'),
       React.createElement('button', { style: btnStyle, onClick: saveDir }, '保存'),
       React.createElement('button', {
         style: btnStyle,
@@ -491,7 +640,8 @@ function Panel(): React.ReactElement | null {
         dir ? '当前：' + dir : '正在定位媒体目录…'),
       React.createElement('button', {
         style: btnStyle,
-        onClick: () => { if (dir) window.open('file:///' + dir.replace(/\\/g, '/')) },
+        onClick: openDir,
+        title: '在系统文件管理器中打开当前目录',
       }, '打开文件夹'),
       React.createElement('button', { style: btnStyle, onClick: refresh }, '刷新'),
     ),
@@ -552,6 +702,7 @@ function Trigger(props: { wide?: boolean }): React.ReactElement {
 }
 
 export function apply(ctx: ClientContext): void {
+  clientCtx = ctx
   themeService = ctx.theme || null
 
   // OS 亮暗翻转时重渲染背景暗化层与遮罩（theme/change 事件在 bundle
