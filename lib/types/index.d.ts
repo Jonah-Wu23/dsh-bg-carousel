@@ -1,4 +1,4 @@
-export declare const name = "@dsh-external/dsh-bg-carousel";
+export declare const name = "@jonahwu/dsh-bg-carousel";
 export declare const inject: string[];
 /** cordis Context 的本插件用到的那一面（vendor/cordis/src）。 */
 interface HostContext {

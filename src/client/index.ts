@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-bg-carousel — client 面板（dsh v0.1.2-rc.1）。
+ * @jonahwu/dsh-bg-carousel — client 面板（dsh v0.1.2-rc.1）。
  * React 组件经 ctx.slots 注册：Trigger 进 sidebar.footer.action，面板进
  * shell.overlay。v0.1.2 起 slots.register 的组件是第二个位置参数（不再放在
  * options 里），组件本身是 React 函数组件而不是 {render()} 对象。

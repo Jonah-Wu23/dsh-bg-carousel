@@ -81,7 +81,7 @@ HLS 由 Safari 原生支持；FLV 需要 MSE 类扩展（如 flv.js）。Chromiu
 方式一：GitHub Release tgz
 
 ```bash
-dsh plugin --profile web add https://github.com/Jonah-Wu23/dsh-bg-carousel/releases/download/v0.3.0/dsh-external-dsh-bg-carousel-0.3.0.tgz
+dsh plugin --profile web add https://github.com/Jonah-Wu23/dsh-bg-carousel/releases/download/v0.3.0/jonahwu-dsh-bg-carousel-0.3.0.tgz
 ```
 
 方式二：git 源
@@ -96,7 +96,7 @@ dsh plugin --profile web add github:Jonah-Wu23/dsh-bg-carousel
 dsh plugin --profile web add <本地 tgz 或目录路径>
 ```
 
-安装后重启 dsh 生效，卸载使用 `dsh plugin --profile web remove @dsh-external/dsh-bg-carousel`。
+安装后重启 dsh 生效，卸载使用 `dsh plugin --profile web remove @jonahwu/dsh-bg-carousel`。
 
 ## 使用
 
@@ -130,7 +130,7 @@ DSH_CHECKOUT=<dsh 源码 checkout> bash scripts/build.sh
 
 运行时零新增依赖：client 只 require 平台种子模块 `react`；未引入 hls.js 或 flv.js，环境不支持的格式自动跳过。
 
-发布：打 tag `v*` 触发 GitHub Actions 执行 `npm pack`，并把 `dsh-external-dsh-bg-carousel-<version>.tgz` 附加到 Release（npm pack 会把 scope 包名规范化为带连字符的文件名，见 [.github/workflows/release.yml](.github/workflows/release.yml)）。
+发布：打 tag `v*` 触发 GitHub Actions 执行 `npm pack`，并把 `jonahwu-dsh-bg-carousel-<version>.tgz` 附加到 Release（npm pack 会把 scope 包名规范化为带连字符的文件名，见 [.github/workflows/release.yml](.github/workflows/release.yml)）。
 
 ## 许可
 

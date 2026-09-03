@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import type { UserConfig } from 'tsdown'
 
-const PLUGIN_ID = "@dsh-external/dsh-bg-carousel"
+const PLUGIN_ID = "@jonahwu/dsh-bg-carousel"
 
 // 平台种子模块（packages/client/web/src/seed.ts）：require 在浏览器运行时
 // 由模块表直接解答，构建期一律 external。client bundle 只 require react。

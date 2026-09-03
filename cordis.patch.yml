@@ -4,4 +4,4 @@
 # into the browser roster (window.__DSH_BOOT__ / /plugins/.../client.js).
 - insert:
     - id: dsh-bg-carousel
-      name: '@dsh-external/dsh-bg-carousel'
+      name: '@jonahwu/dsh-bg-carousel'

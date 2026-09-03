@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-bg-carousel — host 半（dsh v0.1.2-rc.1）。
+ * @jonahwu/dsh-bg-carousel — host 半（dsh v0.1.2-rc.1）。
  * 扫描媒体目录（默认 {workspaceRoot}/backgrounds，可在 UI 里改），经 webServer
  * 前缀路由提供 /dsh-bg/img（媒体字节）与 /dsh-bg/api（JSON API）。
  *
@@ -14,7 +14,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-export const name = '@dsh-external/dsh-bg-carousel'
+export const name = '@jonahwu/dsh-bg-carousel'
 export const inject: string[] = []
 
 /** dsh fs 服务的本插件用到的那一面（packages/fs/fs/src/index.ts，v0.1.2-rc.1）。 */
