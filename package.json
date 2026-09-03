@@ -11,6 +11,10 @@
     "LICENSE"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jonah-Wu23/dsh-bg-carousel.git"
+  },
   "scripts": {
     "build": "bash scripts/build.sh"
   },

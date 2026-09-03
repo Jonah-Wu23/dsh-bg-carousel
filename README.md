@@ -16,7 +16,7 @@
 
 ## 30 秒了解
 
-**媒体目录里的图片和视频按设定间隔轮换为 dsh 界面背景。视频静音播放，界面透明度随时可调。**
+**最好的 DeepSeek Harness 背景轮播插件，可调背景透明度、轮播间隔等，支持多种图片和视频格式，无需小红车（Wallpaper Engine），完美适配浅色与深色模式。**
 
 dsh-bg-carousel 是一个标准 dsh bundle 插件，适配 dsh v0.1.2-rc.1 的 web 界面。宿主端扫描媒体目录，通过 webServer 提供媒体路由；客户端在侧边栏底部注册「背景」入口，负责控制面板。
 
@@ -130,7 +130,7 @@ DSH_CHECKOUT=<dsh 源码 checkout> bash scripts/build.sh
 
 运行时零新增依赖：client 只 require 平台种子模块 `react`；未引入 hls.js 或 flv.js，环境不支持的格式自动跳过。
 
-发布：打 tag `v*` 触发 GitHub Actions 执行 `npm pack`，并把 `dsh-bg-carousel-<version>.tgz` 附加到 Release（见 [.github/workflows/release.yml](.github/workflows/release.yml)）。
+发布：打 tag `v*` 触发 GitHub Actions 执行 `npm pack`，并把 `dsh-external-dsh-bg-carousel-<version>.tgz` 附加到 Release（npm pack 会把 scope 包名规范化为带连字符的文件名，见 [.github/workflows/release.yml](.github/workflows/release.yml)）。
 
 ## 许可
 
